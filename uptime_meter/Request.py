@@ -14,15 +14,14 @@ def send_request(name: str) -> requests.models.Response:
 
 
 
-def send_requests_and_log(database_file: str, name_list: list, log_in_db: bool = True) -> None:
+def send_requests_and_log(conn: sqlite3.Connection, name_list: list, log_in_db: bool = True) -> None:
     try:
-        conn = sqlite3.connect(database_file)
         cursor = conn.cursor()
-        print(f"Successfully connected to database: {database_file}")
-
+        
         if CLEAN_LOGS_BEFORE_EXECUTION:
             print("Cleanning logs before execution.")
-            cursor.execute("DELETE FROM request_logs") # TODO: consider dropping table and recreating it using the schema.sql
+            cursor.execute("DELETE FROM request_logs")
+            cursor.execute("DELETE FROM sqlite_sequence WHERE name='request_logs'") # To restart auto-incremental fields
 
         for name in name_list:
             response = send_request(name)
@@ -40,19 +39,11 @@ def send_requests_and_log(database_file: str, name_list: list, log_in_db: bool =
     except sqlite3.Error as e:
         print(f"Error with SQLite: {e}")
         conn.rollback()
-    finally:
-        if conn:
-            conn.close()
-            print("Closing connection to database.")
 
 
-
-def send_requests_and_log_with_timer(database_file: str, name_list: list, duration_in_secods: int, log_in_db: bool = True) -> None:
+def send_requests_and_log_with_timer(conn: sqlite3.Connection, name_list: list, duration_in_secods: int, log_in_db: bool = True) -> None:
     try:
-        # TODO: Evaluate openning and closing connection to logs DB outside the flow to reuse connection for reporting
-        conn = sqlite3.connect(database_file)
         cursor = conn.cursor()
-        print(f"Successfully connected to database: {database_file}")
 
         if CLEAN_LOGS_BEFORE_EXECUTION:
             print("Cleanning logs before execution.")
@@ -89,17 +80,12 @@ def send_requests_and_log_with_timer(database_file: str, name_list: list, durati
     except sqlite3.Error as e:
         print(f"Error with SQLite: {e}")
         conn.rollback()
-    finally:
-        if conn:
-            conn.close()
-            print("Closing connection to database.")
 
 
 def get_names_from_db(database_file: str) -> list:
     try:
-        conn = sqlite3.connect(database_file)
+        conn = open_connection_to_db(database_file)
         cursor = conn.cursor()
-        print(f"Successfully connected to database: {database_file}")
 
         cursor.execute("SELECT name FROM names")
         names = [row[0] for row in cursor.fetchall()]
@@ -107,20 +93,52 @@ def get_names_from_db(database_file: str) -> list:
         if not names:
             print("No names where found.")
         else:
-            print(f"{len(names)} were found.")
+            print(f"{len(names)} names were found.")
 
         return names
 
     except sqlite3.Error as e:
         print(f"Error with SQLite: {e}")
     finally:
-        if conn:
-            conn.close()
-            print("Closing connection to database.")
+        close_connection_to_db(conn)
+
+def open_connection_to_db(database_file: str) -> sqlite3.Connection:
+    try:
+        conn = sqlite3.connect(database_file)
+        print(f"Successfully connected to database: {database_file}")
+        return conn
+    except sqlite3.Error as e:
+        print(f"Error with SQLite: {e}")
+
+def close_connection_to_db(conn: sqlite3.Connection):
+    if conn:
+        conn.close()
+        print("Closing connection to database.")
+
+def get_availability_report(conn: sqlite3.Connection) -> float:
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT COUNT(id) FROM request_logs") # getting a total count
+        total_count = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(id) FROM request_logs WHERE response_status = 500 AND response_text like \"%System is down%\"")
+        down_count = cursor.fetchone()[0]
+
+        down_percentage = down_count/total_count * 100
+
+        print(f"{"-" * 50}\nTotal requests: {total_count} | Down: {down_count} - {down_percentage:.2f}%\n{"-" * 50}")
+
+    except sqlite3.Error as e:
+        print(f"Error with SQLite: {e}")
+        conn.rollback()
 
 # -------------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
     name_list = get_names_from_db(NAMES_DATABASE_FILE)
-    # send_requests_and_log(REQUEST_LOGS_DATABASE_FILE, name_list, False)
-    send_requests_and_log_with_timer(REQUEST_LOGS_DATABASE_FILE, name_list, 30, True)
+    conn = open_connection_to_db(REQUEST_LOGS_DATABASE_FILE)
+    # send_requests_and_log(conn, name_list, False)
+    send_requests_and_log_with_timer(conn, name_list, 600, True)
+    get_availability_report(conn)
+    close_connection_to_db(conn)
