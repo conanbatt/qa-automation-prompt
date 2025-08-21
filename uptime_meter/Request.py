@@ -1,5 +1,5 @@
 import requests
-from properties import URL_API, REQUEST_LOGS_DATABASE_FILE, CLEAN_LOGS_BEFORE_EXECUTION, NAMES_DATABASE_FILE, ENABLE_THROTTLING_REQUESTS, MAX_REQUESTS_PER_SECOND
+from properties import URL_API, REQUEST_LOGS_DATABASE_FILE, CLEAN_LOGS_BEFORE_EXECUTION, NAMES_DATABASE_FILE, ENABLE_THROTTLING_REQUESTS, MAX_REQUESTS_PER_SECOND, LOG_EXECUTION_PROGRESSION
 import sqlite3
 import time
 import random
@@ -13,19 +13,21 @@ def send_request(name: str) -> requests.models.Response:
         print(f"Connection error: {e}")
 
 
-
 def send_requests_and_log(conn: sqlite3.Connection, name_list: list, log_in_db: bool = True) -> None:
     try:
         cursor = conn.cursor()
         
         if CLEAN_LOGS_BEFORE_EXECUTION:
-            print("Cleanning logs before execution.")
+            if LOG_EXECUTION_PROGRESSION:
+                print("Cleanning logs before execution.")
             cursor.execute("DELETE FROM request_logs")
             cursor.execute("DELETE FROM sqlite_sequence WHERE name='request_logs'") # To restart auto-incremental fields
 
         for name in name_list:
             response = send_request(name)
-            print(f"For '{name}' response:\tStatus: {response.status_code}\tText: {response.text}")
+            if LOG_EXECUTION_PROGRESSION:
+                print(f"For '{name}' response:\tStatus: {response.status_code}\tText: {response.text}")
+
             if log_in_db:
                 cursor.execute(
                     "INSERT INTO request_logs (url, name_parameter, response_status, response_text) VALUES (?, ?, ?, ?)",
@@ -34,7 +36,8 @@ def send_requests_and_log(conn: sqlite3.Connection, name_list: list, log_in_db: 
 
         if log_in_db:
             conn.commit()
-            print(f"Comming {len(name_list)} records.")
+            if LOG_EXECUTION_PROGRESSION:
+                print(f"Comming {len(name_list)} records.")
 
     except sqlite3.Error as e:
         print(f"Error with SQLite: {e}")
@@ -46,9 +49,10 @@ def send_requests_and_log_with_timer(conn: sqlite3.Connection, name_list: list, 
         cursor = conn.cursor()
 
         if CLEAN_LOGS_BEFORE_EXECUTION:
-            print("Cleanning logs before execution.")
+            if LOG_EXECUTION_PROGRESSION:
+                print("Cleanning logs before execution.")
             cursor.execute("DELETE FROM request_logs")
-            cursor.execute("DELETE FROM sqlite_sequence WHERE name='request_logs'") # To restart auto-incremental fields
+            cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'request_logs'") # To restart auto-incremental fields
 
         start_time = time.time()
         print(f"Sending requests for {duration_in_secods} seconds.")
@@ -66,16 +70,18 @@ def send_requests_and_log_with_timer(conn: sqlite3.Connection, name_list: list, 
                 )
                 record_count += 1
             
-            print(f"For '{name}' response:\tStatus: {response.status_code}\tText: {response.text}")
+            if LOG_EXECUTION_PROGRESSION:
+                print(f"For '{name}' response:\tStatus: {response.status_code}\tText: {response.text}")
             
             if ENABLE_THROTTLING_REQUESTS: # Enable throttling in properties.py (note this is a crude way to throttle and not an optimize one)
                 time.sleep(1 / MAX_REQUESTS_PER_SECOND)
 
         if log_in_db:
             conn.commit()
-            print(f"Comming {record_count} records.")
+            if LOG_EXECUTION_PROGRESSION:
+                print(f"Comming {record_count} records.")
             
-        print(f"Finishing execution after {(time.time() - start_time):.2f} seconds.")
+        print(f"Execution finished after {(time.time() - start_time):.2f} seconds.")
 
     except sqlite3.Error as e:
         print(f"Error with SQLite: {e}")
@@ -102,18 +108,23 @@ def get_names_from_db(database_file: str) -> list:
     finally:
         close_connection_to_db(conn)
 
+
 def open_connection_to_db(database_file: str) -> sqlite3.Connection:
     try:
         conn = sqlite3.connect(database_file)
-        print(f"Successfully connected to database: {database_file}")
+        if LOG_EXECUTION_PROGRESSION:
+            print(f"Successfully connected to database: {database_file}")
         return conn
     except sqlite3.Error as e:
         print(f"Error with SQLite: {e}")
 
-def close_connection_to_db(conn: sqlite3.Connection):
+
+def close_connection_to_db(conn: sqlite3.Connection) -> None:
     if conn:
         conn.close()
-        print("Closing connection to database.")
+        if LOG_EXECUTION_PROGRESSION:
+            print("Closing connection to database.")
+
 
 def get_availability_report(conn: sqlite3.Connection) -> float:
     try:
@@ -122,12 +133,12 @@ def get_availability_report(conn: sqlite3.Connection) -> float:
         cursor.execute("SELECT COUNT(id) FROM request_logs") # getting a total count
         total_count = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(id) FROM request_logs WHERE response_status = 500 AND response_text like \"%System is down%\"")
-        down_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(id) FROM request_logs WHERE response_status = 200")
+        up_count = cursor.fetchone()[0]
 
-        down_percentage = down_count/total_count * 100
+        up_percentage = up_count/total_count * 100
 
-        print(f"{"-" * 50}\nTotal requests: {total_count} | Down: {down_count} - {down_percentage:.2f}%\n{"-" * 50}")
+        print(f"{"-" * 50}\nTotal requests: {total_count} | Successful requests: {up_count}\nService Uptime: {up_percentage:.2f}%\n{"-" * 50}")
 
     except sqlite3.Error as e:
         print(f"Error with SQLite: {e}")
@@ -138,7 +149,12 @@ def get_availability_report(conn: sqlite3.Connection) -> float:
 if __name__ == "__main__":
     name_list = get_names_from_db(NAMES_DATABASE_FILE)
     conn = open_connection_to_db(REQUEST_LOGS_DATABASE_FILE)
-    # send_requests_and_log(conn, name_list, False)
     send_requests_and_log_with_timer(conn, name_list, 600, True)
     get_availability_report(conn)
     close_connection_to_db(conn)
+
+    name = "Penelope Lopez"
+    response = send_request(name)
+    print(f"\n{"-" * 55}\nDetected Bug description:\n\twhen name has at least to lowercase 'P' letters system throws an error")
+    print(f"Request:\n\tName: {name}")
+    print(f"Response:\n\tStatus: {response.status_code}\n\tText: {response.text}\n{"-" * 55}")
